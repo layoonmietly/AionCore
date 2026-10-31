@@ -344,6 +344,11 @@ pub struct UnifiedAttachment {
     pub file_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Local file path when the channel downloaded the attachment to disk.
+    /// Channel plugins that cannot download leave this as `None`; the
+    /// orchestrator only forwards attachments that have a local path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +786,7 @@ mod tests {
             mime_type: Some("image/jpeg".into()),
             file_size: Some(12345),
             url: None,
+            local_path: None,
         };
         let json = serde_json::to_value(&att).unwrap();
         assert_eq!(json["file_id"], "file_1");

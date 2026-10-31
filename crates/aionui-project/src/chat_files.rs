@@ -54,6 +54,11 @@ impl ProjectService {
 
         let content = if paths.is_empty() {
             content.to_owned()
+        } else if content.trim().is_empty() {
+            // Media-only message: do not emit a leading blank block before the
+            // marker, otherwise the UI renders an empty paragraph above the
+            // file chips.
+            format!("{AIONUI_FILES_MARKER}\n{}", paths.join("\n"))
         } else {
             format!("{content}\n\n{AIONUI_FILES_MARKER}\n{}", paths.join("\n"))
         };

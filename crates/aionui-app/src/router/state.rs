@@ -56,6 +56,7 @@ use aionui_team::{
 
 use crate::config::{IdentityMode, derive_encryption_key};
 use crate::router::team_capability_resolver::TeamCapabilityResolver;
+use crate::router::team_channel_dispatch::TeamChannelDispatcher;
 use crate::router::team_conversation_adapters::TeamConversationAdapters;
 use crate::services::AppServices;
 
@@ -264,19 +265,37 @@ pub async fn build_module_states(
     > = Arc::new(GeneratedAssistantMaterializerAdapter {
         assistant: assistant.service.clone(),
     });
-    let (channel_state, channel_components) = build_channel_state(
-        services,
-        ext_state.registry.clone(),
-        Some(generated_assistant_materializer),
-    )
-    .await;
-    tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
-
     let backend_binary_path = services.backend_binary_path();
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: backend binary path resolved"
     );
+
+    // Team state must exist before channel state so the channel orchestrator
+    // can dispatch team-bound platform messages through it.
+    let team_state = build_module_state_phase(&boot, "team", || {
+        build_team_state(
+            services,
+            Some(cron.cron_service.clone()),
+            backend_binary_path.clone(),
+            assistant.service.clone(),
+        )
+    });
+    let team_dispatcher: Arc<dyn aionui_channel::team_dispatch::ChannelTeamDispatcher> =
+        Arc::new(TeamChannelDispatcher::new(
+            team_state.service.clone(),
+            services.worker_task_manager.clone(),
+            services.event_bus.clone(),
+        ));
+
+    let (channel_state, channel_components) = build_channel_state(
+        services,
+        ext_state.registry.clone(),
+        Some(generated_assistant_materializer),
+        team_dispatcher,
+    )
+    .await;
+    tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
 
     let pool = services.database.pool().clone();
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool.clone()));
@@ -320,14 +339,7 @@ pub async fn build_module_states(
         hub: hub_state,
         skill: skill_state,
         channel: channel_state,
-        team: build_module_state_phase(&boot, "team", || {
-            build_team_state(
-                services,
-                Some(cron.cron_service.clone()),
-                backend_binary_path.clone(),
-                assistant.service.clone(),
-            )
-        }),
+        team: team_state,
         session_message: build_module_state_phase(&boot, "session_message", || build_session_message_state(services)),
         skill_runtime: build_module_state_phase(&boot, "skill_runtime", || build_skill_runtime_state(services)),
         cron,
@@ -765,6 +777,7 @@ pub async fn build_channel_state(
     generated_assistant_materializer: Option<
         Arc<dyn aionui_channel::channel_settings::ChannelGeneratedAssistantMaterializer>,
     >,
+    team_dispatcher: Arc<dyn aionui_channel::team_dispatch::ChannelTeamDispatcher>,
 ) -> (ChannelRouterState, ChannelOrchestratorComponents) {
     let pool = services.database.pool().clone();
     let repo: Arc<dyn aionui_db::IChannelRepository> = Arc::new(aionui_db::SqliteChannelRepository::new(pool));
@@ -810,6 +823,7 @@ pub async fn build_channel_state(
         message_service,
         Arc::clone(&session_manager),
         manager.clone() as Arc<dyn aionui_channel::stream_relay::ChannelSender>,
+        team_dispatcher,
     );
 
     let state = ChannelRouterState {

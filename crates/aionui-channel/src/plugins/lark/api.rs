@@ -8,9 +8,9 @@ use tracing::{debug, warn};
 use crate::error::ChannelError;
 
 use super::types::{
-    BotInfoData, BotInfoResponse, GenericResponse, SendCardRequest, SendMessageData, SendMessageResponse,
-    TenantAccessTokenRequest, TenantAccessTokenResponse, UpdateCardRequest, WsEndpointData, WsEndpointRequest,
-    WsEndpointResponse,
+    BotInfoData, BotInfoResponse, GenericResponse, GetMessageResponse, QuotedMessageItem, SendCardRequest,
+    SendMessageData, SendMessageResponse, TenantAccessTokenRequest, TenantAccessTokenResponse, UpdateCardRequest,
+    WsEndpointData, WsEndpointRequest, WsEndpointResponse,
 };
 
 const LARK_OPEN_API_BASE: &str = "https://open.feishu.cn/open-apis";
@@ -184,6 +184,34 @@ impl LarkApi {
             .ok_or_else(|| ChannelError::ConnectionFailed("Lark WS endpoint returned no URL".into()))
     }
 
+    /// Fetch a message by id, used to resolve quoted/replied-to messages.
+    pub async fn get_message(&self, message_id: &str) -> Result<QuotedMessageItem, ChannelError> {
+        let token = self.get_token().await?;
+        let url = format!("{LARK_OPEN_API_BASE}/im/v1/messages/{message_id}");
+
+        let resp: GetMessageResponse = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| ChannelError::PlatformApi(format!("Lark get message request failed: {e}")))?
+            .json()
+            .await
+            .map_err(|e| ChannelError::PlatformApi(format!("Lark get message parse failed: {e}")))?;
+
+        if resp.code != 0 {
+            return Err(ChannelError::PlatformApi(format!(
+                "Lark get message error (code={}): {}",
+                resp.code, resp.msg
+            )));
+        }
+
+        resp.data
+            .and_then(|data| data.items.into_iter().next())
+            .ok_or_else(|| ChannelError::PlatformApi("Lark get message returned no items".into()))
+    }
+
     /// Send an interactive card message to a chat.
     ///
     /// Uses `receive_id_type=chat_id` to address by chat ID.
@@ -256,6 +284,79 @@ impl LarkApi {
 
         Ok(())
     }
+
+    /// Download a message resource (image or file) from Lark.
+    ///
+    /// Lark exposes message attachments through
+    /// `GET /im/v1/messages/{message_id}/resources/{file_key}?type=image|file`.
+    /// The app must have the `im:resource` permission.
+    pub async fn download_message_resource(
+        &self,
+        message_id: &str,
+        file_key: &str,
+        resource_type: &str,
+    ) -> Result<DownloadedResource, ChannelError> {
+        let token = self.get_token().await?;
+        let url = resource_download_url(message_id, file_key, resource_type);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| ChannelError::PlatformApi(format!("Lark resource download request failed: {e}")))?;
+
+        let status = resp.status();
+        if let Some(len) = resp.content_length()
+            && len > MAX_RESOURCE_BYTES
+        {
+            return Err(ChannelError::PlatformApi(format!(
+                "Lark resource too large ({len} bytes, max {MAX_RESOURCE_BYTES})"
+            )));
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ChannelError::PlatformApi(format!("Lark resource download read failed: {e}")))?;
+
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&bytes);
+            return Err(ChannelError::PlatformApi(format!(
+                "Lark resource download failed (status={status}, type={resource_type}): {body}"
+            )));
+        }
+        if bytes.is_empty() {
+            return Err(ChannelError::PlatformApi(format!(
+                "Lark resource download returned an empty body (type={resource_type})"
+            )));
+        }
+
+        Ok(DownloadedResource {
+            bytes: bytes.to_vec(),
+            content_type,
+        })
+    }
+}
+
+/// Maximum attachment size we are willing to download from Lark (50 MiB).
+/// Larger resources are rejected before the body is buffered.
+const MAX_RESOURCE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Binary resource downloaded from Lark.
+pub(crate) struct DownloadedResource {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
+fn resource_download_url(message_id: &str, file_key: &str, resource_type: &str) -> String {
+    format!("{LARK_OPEN_API_BASE}/im/v1/messages/{message_id}/resources/{file_key}?type={resource_type}")
 }
 
 #[cfg(test)]
@@ -288,6 +389,14 @@ mod tests {
             expires_in: Duration::from_secs(7200),
         };
         assert!(cache.is_expired());
+    }
+
+    #[test]
+    fn resource_download_url_targets_message_resource_endpoint() {
+        assert_eq!(
+            resource_download_url("om_123", "img_v3_abc", "image"),
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_123/resources/img_v3_abc?type=image"
+        );
     }
 
     #[test]

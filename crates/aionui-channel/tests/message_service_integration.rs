@@ -250,7 +250,7 @@ async fn send_to_agent_warms_cold_task_before_returning_stream_subscription() {
         PluginType::Weixin,
     ] {
         let result = message_svc
-            .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", platform)
+            .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", None, platform)
             .await
             .unwrap();
 
@@ -322,7 +322,7 @@ async fn send_to_agent_persists_assistant_snapshot_for_channel_bound_assistant()
     };
 
     let result = message_svc
-        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", PluginType::Telegram)
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", None, PluginType::Telegram)
         .await
         .unwrap();
 
@@ -399,7 +399,7 @@ async fn send_to_agent_rejects_unresolvable_channel_assistant_binding() {
     };
 
     let err = message_svc
-        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", PluginType::Telegram)
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", None, PluginType::Telegram)
         .await
         .unwrap_err();
     assert!(matches!(err, ChannelError::MessageSendFailed(_)));
@@ -459,7 +459,7 @@ async fn send_to_agent_without_saved_binding_defaults_to_bare_aionrs_assistant()
     };
 
     let result = message_svc
-        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", PluginType::Telegram)
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", None, PluginType::Telegram)
         .await
         .unwrap();
 
@@ -537,7 +537,7 @@ async fn send_to_agent_without_assistant_name_falls_back_to_legacy_channel_name(
     };
 
     let result = message_svc
-        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", PluginType::Telegram)
+        .send_to_agent(TEST_OWNER_USER_ID, &session, "hello", None, PluginType::Telegram)
         .await
         .unwrap();
 

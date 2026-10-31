@@ -15,6 +15,7 @@ pub mod plugins;
 pub mod routes;
 pub mod session;
 pub mod stream_relay;
+pub mod team_dispatch;
 pub mod types;
 
 #[cfg(feature = "weixin")]

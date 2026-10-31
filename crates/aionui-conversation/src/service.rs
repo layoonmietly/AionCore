@@ -71,6 +71,14 @@ const LEGACY_CONVERSATION_ARCHIVED_MESSAGE: &str =
     "This historical conversation can no longer be continued. Please start a new conversation.";
 const DEPRECATED_AGENT_TYPE_MESSAGE: &str = "This agent type is no longer supported for new conversations.";
 
+/// Whether a send request has neither text nor attachments.
+///
+/// A media-only message is valid: channel plugins (e.g. a Feishu image message)
+/// send an empty body with one or more file refs.
+pub(crate) fn message_is_empty(content: &str, files: &[ChatFileRef]) -> bool {
+    content.trim().is_empty() && files.is_empty()
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub(crate) struct AssistantConversationOverrides {
     #[serde(default)]
@@ -3815,7 +3823,9 @@ impl ConversationService {
         req: SendMessageRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
     ) -> Result<SendMessageResponse, ConversationError> {
-        if req.content.trim().is_empty() {
+        // A media-only message is valid: the channel layer sends an empty body
+        // with one or more resolved file refs (e.g. a Feishu image message).
+        if message_is_empty(&req.content, &req.files) {
             return Err(ConversationError::BadRequest {
                 reason: "Message content must not be empty".into(),
             });

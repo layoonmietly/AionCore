@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use aionui_ai_agent::{AgentStreamEvent, IWorkerTaskManager};
-use aionui_api_types::{AssistantConversationRequest, CreateConversationRequest, SendMessageRequest};
+use aionui_api_types::{AssistantConversationRequest, ChatFileRef, CreateConversationRequest, SendMessageRequest};
 use aionui_common::{AgentType, ConversationSource};
-use aionui_conversation::ConversationService;
+use aionui_conversation::{ConversationError, ConversationService};
 use aionui_db::models::AssistantSessionRow;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -11,9 +11,18 @@ use tracing::{debug, info, warn};
 use crate::channel_settings::{ChannelSettingsService, resolved_model_to_provider};
 use crate::constants::{STREAM_THROTTLE_INTERVAL, TOOL_CONFIRM_TIMEOUT};
 use crate::error::ChannelError;
-use crate::types::{ActionButton, OutgoingMessageType, PluginType, UnifiedOutgoingMessage};
+use crate::types::{ActionButton, OutgoingMessageType, PluginType, UnifiedAttachment, UnifiedOutgoingMessage};
 
 const DEPRECATED_AGENT_TYPE_MESSAGE: &str = "This agent type is no longer supported for new conversations.";
+
+fn conversation_error_to_channel(error: ConversationError, conversation_id: &str) -> ChannelError {
+    match error {
+        ConversationError::Busy { .. } => ChannelError::ConversationBusy {
+            conversation_id: conversation_id.to_owned(),
+        },
+        other => ChannelError::MessageSendFailed(other.to_string()),
+    }
+}
 
 /// Bridges channel messages to the conversation + AI agent layer.
 ///
@@ -42,6 +51,11 @@ impl ChannelMessageService {
         }
     }
 
+    /// True while the conversation has an active (unfinished) turn.
+    pub fn is_conversation_busy(&self, conversation_id: &str) -> bool {
+        self.conversation_svc.runtime_state().is_claimed(conversation_id)
+    }
+
     /// Sends a text message from a channel user to the AI agent.
     ///
     /// 1. Ensures the session has a backing conversation (creates one if needed)
@@ -56,6 +70,7 @@ impl ChannelMessageService {
         owner_user_id: &str,
         session: &AssistantSessionRow,
         text: &str,
+        attachments: Option<&[UnifiedAttachment]>,
         platform: PluginType,
     ) -> Result<SendResult, ChannelError> {
         // Ensure conversation exists
@@ -67,13 +82,26 @@ impl ChannelMessageService {
             }
         };
 
+        // Attachments are downloaded by the channel plugin before dispatch;
+        // only the ones that landed on disk can be forwarded. A media-only
+        // message (empty text) is valid as long as at least one file survived.
+        let files = chat_file_refs(attachments);
+        if text.trim().is_empty() && files.is_empty() {
+            let reason = if attachments.is_some_and(|items| !items.is_empty()) {
+                "Attachment could not be downloaded"
+            } else {
+                "Message content must not be empty"
+            };
+            return Err(ChannelError::MessageSendFailed(reason.to_owned()));
+        }
+
         // Send message through ConversationService. `msg_id` is now
         // server-generated inside the service; channel plugins that need to
         // correlate the user message back to the conversation should use
         // `conversation_id` + stream events instead of a client-provided id.
         let req = SendMessageRequest {
             content: text.to_owned(),
-            files: vec![],
+            files,
             // Channel traffic has no `@@` picker, so never any session refs.
             sessions: vec![],
             inject_skills: vec![],
@@ -88,7 +116,7 @@ impl ChannelMessageService {
         self.conversation_svc
             .warmup(user_id, &conversation_id, &self.task_manager)
             .await
-            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+            .map_err(|e| conversation_error_to_channel(e, &conversation_id))?;
 
         let stream_rx = self
             .task_manager
@@ -103,7 +131,7 @@ impl ChannelMessageService {
         self.conversation_svc
             .send_message(user_id, &conversation_id, req, &self.task_manager)
             .await
-            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
+            .map_err(|e| conversation_error_to_channel(e, &conversation_id))?;
 
         info!(
             conversation_id = %conversation_id,
@@ -446,6 +474,20 @@ fn channel_conversation_name(
     parts.join("-")
 }
 
+/// Convert channel attachments that were downloaded to disk into chat file refs.
+///
+/// Attachments without a `local_path` are platform-owned resources that the
+/// plugin could not fetch (or does not download yet); forwarding their opaque
+/// platform id as a path would fail the conversation's file validation.
+pub(crate) fn chat_file_refs(attachments: Option<&[UnifiedAttachment]>) -> Vec<ChatFileRef> {
+    attachments
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|attachment| attachment.local_path.as_ref())
+        .map(|path| ChatFileRef::Local { path: path.clone() })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +776,54 @@ mod tests {
     fn conv_name_non_acp_ignores_backend() {
         let name = channel_conversation_name(PluginType::Telegram, "aionrs", Some("claude"), Some("70880480"));
         assert_eq!(name, "tg-aionrs-70880480");
+    }
+
+    // ── chat_file_refs ────────────────────────────────────────────────
+
+    fn attachment(local_path: Option<&str>) -> UnifiedAttachment {
+        UnifiedAttachment {
+            file_id: Some("platform-file-id".into()),
+            file_name: None,
+            mime_type: None,
+            file_size: None,
+            url: None,
+            local_path: local_path.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn chat_file_refs_forward_only_downloaded_attachments() {
+        let items = vec![attachment(Some("C:\\temp\\aionui\\lark\\image.jpg")), attachment(None)];
+
+        assert_eq!(
+            chat_file_refs(Some(&items)),
+            vec![ChatFileRef::Local {
+                path: "C:\\temp\\aionui\\lark\\image.jpg".into()
+            }]
+        );
+        assert!(chat_file_refs(None).is_empty());
+        assert!(chat_file_refs(Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn busy_conversation_error_maps_to_channel_busy() {
+        let busy = conversation_error_to_channel(
+            ConversationError::Busy {
+                reason: "conversation conv-1 is already running".into(),
+            },
+            "conv-1",
+        );
+        assert!(matches!(
+            busy,
+            ChannelError::ConversationBusy { conversation_id } if conversation_id == "conv-1"
+        ));
+
+        let other = conversation_error_to_channel(
+            ConversationError::BadRequest {
+                reason: "bad request".into(),
+            },
+            "conv-1",
+        );
+        assert!(matches!(other, ChannelError::MessageSendFailed(_)));
     }
 }

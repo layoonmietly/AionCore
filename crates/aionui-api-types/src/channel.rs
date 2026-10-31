@@ -91,10 +91,16 @@ pub struct SyncChannelSettingsRequest {
 ///
 /// New writes must use assistant identity only. Legacy backend / agent fields
 /// remain readable in responses for historical settings migration.
+///
+/// A platform may instead bind to a team: `team_id` is mutually exclusive with
+/// `assistant_id`, and exactly one of them must be present.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelAssistantSettingRequest {
-    pub assistant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -107,6 +113,10 @@ pub struct ChannelAssistantSettingRequest {
 pub struct ChannelAssistantSettingResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assistant_id: Option<String>,
+    /// Team binding; when present the platform talks to a team instead of a
+    /// single assistant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

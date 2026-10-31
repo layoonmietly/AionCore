@@ -456,6 +456,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
                 mime_type: Some("image/jpeg".into()),
                 file_size: p.file_size,
                 url: None,
+                local_path: None,
             }]
         });
         return (MessageContentType::Photo, caption, attachments);
@@ -469,6 +470,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
             mime_type: doc.mime_type.clone(),
             file_size: doc.file_size,
             url: None,
+            local_path: None,
         }];
         return (MessageContentType::Document, caption, Some(attachments));
     }
@@ -481,6 +483,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
             mime_type: voice.mime_type.clone(),
             file_size: voice.file_size,
             url: None,
+            local_path: None,
         }];
         return (MessageContentType::Voice, caption, Some(attachments));
     }
@@ -493,6 +496,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
             mime_type: audio.mime_type.clone(),
             file_size: audio.file_size,
             url: None,
+            local_path: None,
         }];
         return (MessageContentType::Audio, caption, Some(attachments));
     }
@@ -505,6 +509,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
             mime_type: video.mime_type.clone(),
             file_size: video.file_size,
             url: None,
+            local_path: None,
         }];
         return (MessageContentType::Video, caption, Some(attachments));
     }
@@ -518,6 +523,7 @@ fn extract_content(msg: &TgMessage) -> (MessageContentType, String, Option<Vec<U
             mime_type: None,
             file_size: None,
             url: None,
+            local_path: None,
         }];
         return (MessageContentType::Sticker, text, Some(attachments));
     }

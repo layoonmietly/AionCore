@@ -24,6 +24,18 @@ pub enum MessageResult {
         owner_user_id: String,
         session_id: String,
         conversation_id: Option<String>,
+        /// Prompt to send instead of the incoming message text. Used by card
+        /// actions such as Regenerate/Continue, whose events carry no text.
+        text_override: Option<String>,
+    },
+    /// Message was dispatched to a team bound to this platform. The caller
+    /// routes it through the team port and relays the leader's reply.
+    TeamDispatched {
+        owner_user_id: String,
+        team_id: String,
+        /// Prompt to send instead of the incoming message text. Used by card
+        /// actions such as Regenerate/Continue/New Session.
+        text_override: Option<String>,
     },
     /// Message was a text but user already has an active agent stream
     /// (no duplicate dispatch needed).
@@ -95,10 +107,53 @@ impl ActionExecutor {
             }
         };
 
-        // 2. Button callback → action routing
+        // 2. Team binding: when the platform targets a team, every message
+        // (and the reply-card actions) goes to the team leader instead of a
+        // single-assistant session.
+        if let Some(team) = self.settings.get_team_binding(owner_user_id, msg.platform).await? {
+            let text_override = match msg.action.as_ref().map(|action| action.action.as_str()) {
+                Some("chat.regenerate") => Some("请重新生成并回答上一个问题。".to_owned()),
+                Some("chat.continue") => Some("请继续。".to_owned()),
+                Some("session.new") => Some("/clear".to_owned()),
+                Some(_) => {
+                    let action = msg.action.as_ref().expect("matched Some");
+                    let response = self.route_action(owner_user_id, action, &internal_user_id).await?;
+                    return Ok(MessageResult::Action(response));
+                }
+                None => None,
+            };
+
+            info!(
+                team_id = %team.team_id,
+                user_id = %user_id,
+                chat_id = %chat_id,
+                text_len = text_override.as_deref().map(str::len).unwrap_or(msg.content.text.len()),
+                "message dispatched to team"
+            );
+
+            return Ok(MessageResult::TeamDispatched {
+                owner_user_id: owner_user_id.to_owned(),
+                team_id: team.team_id,
+                text_override,
+            });
+        }
+
+        // 3. Button callback → action routing. Regenerate/Continue must run the
+        // agent again, so they fall through to the dispatch path with a
+        // synthetic prompt; returning an action response would be a no-op.
+        let mut text_override = None;
         if let Some(action) = &msg.action {
-            let response = self.route_action(owner_user_id, action, &internal_user_id).await?;
-            return Ok(MessageResult::Action(response));
+            if action.category == ActionCategory::Chat {
+                match action.action.as_str() {
+                    "chat.regenerate" => text_override = Some("请重新生成并回答上一个问题。".to_owned()),
+                    "chat.continue" => text_override = Some("请继续。".to_owned()),
+                    _ => {}
+                }
+            }
+            if text_override.is_none() {
+                let response = self.route_action(owner_user_id, action, &internal_user_id).await?;
+                return Ok(MessageResult::Action(response));
+            }
         }
 
         // 3. Text message → session resolution → AI dispatch
@@ -114,11 +169,12 @@ impl ActionExecutor {
             )
             .await?;
 
+        let text_len = text_override.as_deref().map(str::len).unwrap_or(msg.content.text.len());
         info!(
             session_id = %session.id,
             user_id = %user_id,
             chat_id = %chat_id,
-            text_len = msg.content.text.len(),
+            text_len,
             "message dispatched to agent"
         );
 
@@ -126,6 +182,7 @@ impl ActionExecutor {
             owner_user_id: owner_user_id.to_owned(),
             session_id: session.id,
             conversation_id: session.conversation_id,
+            text_override,
         })
     }
 
@@ -794,6 +851,48 @@ mod tests {
         (executor, repo)
     }
 
+    struct TeamPrefRepo {
+        value: String,
+    }
+
+    #[async_trait::async_trait]
+    impl IClientPreferenceRepository for TeamPrefRepo {
+        async fn get_all(&self, _user_id: &str) -> Result<Vec<ClientPreference>, DbError> {
+            Ok(vec![])
+        }
+        async fn get_by_keys(&self, user_id: &str, keys: &[&str]) -> Result<Vec<ClientPreference>, DbError> {
+            Ok(keys
+                .iter()
+                .filter(|key| key.ends_with(".agent"))
+                .map(|key| ClientPreference {
+                    user_id: user_id.to_owned(),
+                    key: (*key).to_owned(),
+                    value: self.value.clone(),
+                    updated_at: 0,
+                })
+                .collect())
+        }
+        async fn upsert_batch(&self, _user_id: &str, _entries: &[(&str, &str)]) -> Result<(), DbError> {
+            Ok(())
+        }
+        async fn delete_keys(&self, _user_id: &str, _keys: &[&str]) -> Result<(), DbError> {
+            Ok(())
+        }
+    }
+
+    fn setup_with_team(team_id: &str) -> (ActionExecutor, Arc<MockRepo>) {
+        let repo = Arc::new(MockRepo::new());
+        let broadcaster = Arc::new(MockBroadcaster);
+        let pairing = Arc::new(PairingService::new(repo.clone(), broadcaster));
+        let session_mgr = Arc::new(SessionManager::new(repo.clone()));
+        let pref_repo: Arc<dyn IClientPreferenceRepository> = Arc::new(TeamPrefRepo {
+            value: format!(r#"{{"team_id":"{team_id}","name":"Team"}}"#),
+        });
+        let settings = Arc::new(ChannelSettingsService::new(pref_repo));
+        let executor = ActionExecutor::new(pairing, session_mgr, settings, Some(OWNER_ID.to_owned()));
+        (executor, repo)
+    }
+
     fn make_text_message(user_id: &str, chat_id: &str, text: &str, platform: PluginType) -> UnifiedIncomingMessage {
         UnifiedIncomingMessage {
             owner_user_id: None,
@@ -1082,6 +1181,69 @@ mod tests {
             .filter(|s| s.user_id == "user_tg_42" && s.chat_id.as_deref() == Some("chat_1"))
             .collect();
         assert_eq!(user_chat_sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn team_binding_dispatches_text_to_team() {
+        let (executor, repo) = setup_with_team("team-1");
+        repo.add_authorized_user("tg_42", "telegram");
+
+        let msg = make_text_message("tg_42", "chat_1", "hello team", PluginType::Telegram);
+        match executor.handle_incoming_message(&msg).await.unwrap() {
+            MessageResult::TeamDispatched {
+                team_id, text_override, ..
+            } => {
+                assert_eq!(team_id, "team-1");
+                assert!(text_override.is_none());
+            }
+            other => panic!("expected team dispatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn team_binding_regenerate_dispatches_synthetic_prompt() {
+        let (executor, repo) = setup_with_team("team-1");
+        repo.add_authorized_user("tg_42", "telegram");
+
+        let msg = make_action_message(
+            "tg_42",
+            "chat_1",
+            "chat.regenerate",
+            ActionCategory::Chat,
+            PluginType::Telegram,
+            None,
+        );
+        match executor.handle_incoming_message(&msg).await.unwrap() {
+            MessageResult::TeamDispatched {
+                team_id, text_override, ..
+            } => {
+                assert_eq!(team_id, "team-1");
+                assert!(text_override.unwrap().contains("重新生成"));
+            }
+            other => panic!("expected team dispatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn regenerate_action_dispatches_synthetic_prompt() {
+        let (executor, repo) = setup();
+        repo.add_authorized_user("tg_42", "telegram");
+
+        let msg = make_action_message(
+            "tg_42",
+            "chat_1",
+            "chat.regenerate",
+            ActionCategory::Chat,
+            PluginType::Telegram,
+            None,
+        );
+        let result = executor.handle_incoming_message(&msg).await.unwrap();
+        match result {
+            MessageResult::Dispatched { text_override, .. } => {
+                assert!(text_override.unwrap().contains("重新生成"));
+            }
+            _ => panic!("Expected Dispatched result"),
+        }
     }
 
     #[tokio::test]

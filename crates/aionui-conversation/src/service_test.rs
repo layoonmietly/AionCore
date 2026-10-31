@@ -24,7 +24,7 @@ use aionui_api_types::{
     SetConfigOptionRequest, SetConfigOptionResponse,
 };
 use aionui_api_types::{
-    CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
+    ChatFileRef, CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
     SendMessageRequest, UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
@@ -50,7 +50,7 @@ use aionui_realtime::EventBroadcaster;
 use serde_json::json;
 use tokio::sync::{Notify, broadcast};
 
-use crate::service::ConversationService;
+use crate::service::{ConversationService, message_is_empty};
 use crate::skill_resolver::{FixedSkillResolver, ResolvedAgentSkill, SkillResolver};
 use crate::{ConversationAgentTurnRequest, ConversationAgentTurnStatus, ConversationError};
 
@@ -6091,6 +6091,19 @@ async fn send_message_persists_openclaw_gateway_unreachable_tip_when_turn_build_
         "USER_AGENT_OPENCLAW_GATEWAY_UNREACHABLE"
     );
     assert_eq!(error_tip_event.data["turn_id"], response.turn_id);
+}
+
+#[test]
+fn message_is_empty_allows_media_only_messages() {
+    assert!(message_is_empty("", &[]));
+    assert!(message_is_empty("   ", &[]));
+    assert!(!message_is_empty(
+        "",
+        &[ChatFileRef::Local {
+            path: "C:\\temp\\image.jpg".into()
+        }]
+    ));
+    assert!(!message_is_empty("hello", &[]));
 }
 
 #[tokio::test]

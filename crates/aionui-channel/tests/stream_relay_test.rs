@@ -249,6 +249,32 @@ async fn weixin_skips_flush_when_buffer_is_empty() {
 }
 
 #[tokio::test]
+async fn relay_settles_placeholder_when_turn_has_no_text() {
+    let (event_tx, _) = broadcast::channel::<AgentStreamEvent>(64);
+    let recorder = Arc::new(MessageRecorder::new());
+
+    let config = RelayConfig {
+        owner_user_id: "system_default_user".to_owned(),
+        platform: PluginType::Lark,
+        plugin_id: "lark".into(),
+        chat_id: "chat_1".into(),
+        throttle_ms: 10,
+    };
+    let relay = ChannelStreamRelay::new(config, recorder.clone());
+    let rx = event_tx.subscribe();
+
+    event_tx
+        .send(AgentStreamEvent::Finish(FinishEventData { session_id: None }))
+        .unwrap();
+
+    relay.run(rx).await;
+
+    let edits = recorder.take_edits();
+    assert!(!edits.is_empty(), "placeholder must be settled");
+    assert!(edits.last().unwrap().text.as_deref().unwrap().contains("Done"));
+}
+
+#[tokio::test]
 async fn relay_handles_channel_closed() {
     let (event_tx, _) = broadcast::channel::<AgentStreamEvent>(64);
     let recorder = Arc::new(MessageRecorder::new());

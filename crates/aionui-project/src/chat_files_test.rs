@@ -53,6 +53,30 @@ async fn resolves_project_file_and_inlines_marker() {
 }
 
 #[tokio::test]
+async fn media_only_message_inlines_marker_without_leading_blank_lines() {
+    let (service, pe_id, dir, upload_root) = setup().await;
+    std::fs::write(dir.path().join("photo.jpg"), b"jpeg").unwrap();
+
+    let out = service
+        .resolve_chat_message(
+            "system_default_user",
+            "",
+            &[ChatFileRef::Project {
+                pe_id,
+                relative_path: "photo.jpg".into(),
+            }],
+            upload_root.path(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(out.files.len(), 1);
+    let abs = &out.files[0];
+    assert!(abs.ends_with("photo.jpg"));
+    assert_eq!(out.content, format!("{AIONUI_FILES_MARKER}\n{abs}"));
+}
+
+#[tokio::test]
 async fn resolves_project_directory_ref() {
     let (service, pe_id, dir, upload_root) = setup().await;
     std::fs::create_dir(dir.path().join("sub")).unwrap();

@@ -59,6 +59,14 @@ pub struct ResolvedModelConfig {
     pub use_model: Option<String>,
 }
 
+/// Team target for a channel platform, when the platform is bound to a team
+/// instead of a single assistant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTeamBinding {
+    pub team_id: String,
+    pub name: Option<String>,
+}
+
 impl ChannelSettingsService {
     pub fn new(pref_repo: Arc<dyn IClientPreferenceRepository>) -> Self {
         Self {
@@ -267,6 +275,20 @@ impl ChannelSettingsService {
         platform: PluginType,
         assistant: &ChannelAssistantSettingRequest,
     ) -> Result<(), ChannelError> {
+        let has_assistant = assistant
+            .assistant_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_team = assistant
+            .team_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if has_assistant == has_team {
+            return Err(ChannelError::InvalidConfig(
+                "channel binding must target exactly one assistant or team".to_owned(),
+            ));
+        }
+
         let normalized = normalize_channel_assistant_setting_for_write(assistant);
         let payload = serde_json::to_string(&normalized).map_err(ChannelError::Json)?;
         let key = agent_key(platform);
@@ -274,6 +296,38 @@ impl ChannelSettingsService {
             .upsert_batch(user_id, &[(&key, payload.as_str())])
             .await?;
         Ok(())
+    }
+
+    /// Team target for a platform, if the channel is bound to a team.
+    ///
+    /// The binding is stored alongside the assistant binding (same preference
+    /// key) using a mutually exclusive `team_id` field, so switching between an
+    /// assistant and a team never leaves two targets active.
+    pub async fn get_team_binding(
+        &self,
+        user_id: &str,
+        platform: PluginType,
+    ) -> Result<Option<ResolvedTeamBinding>, ChannelError> {
+        let key = agent_key(platform);
+        let prefs = self.pref_repo.get_by_keys(user_id, &[&key]).await?;
+        let Some(pref) = prefs.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(parsed) = parse_channel_assistant_setting(&pref.value) else {
+            return Ok(None);
+        };
+        let Some(team_id) = parsed
+            .team_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ResolvedTeamBinding {
+            team_id: team_id.to_owned(),
+            name: parsed.name,
+        }))
     }
 
     pub async fn set_model_setting(
@@ -365,6 +419,23 @@ impl ChannelSettingsService {
         user_id: &str,
         assistant: ChannelAssistantSettingResponse,
     ) -> Result<ChannelAssistantSettingResponse, ChannelError> {
+        // A team binding is already canonical; do not try to promote legacy
+        // assistant fields for it.
+        if assistant
+            .team_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Ok(ChannelAssistantSettingResponse {
+                assistant_id: None,
+                team_id: assistant.team_id.map(|value| value.trim().to_owned()),
+                custom_agent_id: None,
+                backend: None,
+                agent_type: None,
+                name: assistant.name,
+            });
+        }
+
         let assistant_id = assistant
             .assistant_id
             .as_deref()
@@ -388,6 +459,7 @@ impl ChannelSettingsService {
         if canonical_assistant_id.is_some() {
             Ok(ChannelAssistantSettingResponse {
                 assistant_id: canonical_assistant_id,
+                team_id: None,
                 custom_agent_id: None,
                 backend: None,
                 agent_type: None,
@@ -408,6 +480,7 @@ impl ChannelSettingsService {
 
         Ok(Some(ChannelAssistantSettingResponse {
             assistant_id: Some(assistant_id),
+            team_id: None,
             custom_agent_id: None,
             backend: None,
             agent_type: None,
@@ -497,6 +570,7 @@ fn parse_channel_assistant_setting(value: &str) -> Option<ChannelAssistantSettin
     if let Some(raw) = parsed.as_str() {
         return Some(ChannelAssistantSettingResponse {
             assistant_id: None,
+            team_id: None,
             custom_agent_id: None,
             backend: Some(raw.to_owned()),
             agent_type: Some(backend_to_agent_type(raw)),
@@ -506,6 +580,7 @@ fn parse_channel_assistant_setting(value: &str) -> Option<ChannelAssistantSettin
 
     Some(ChannelAssistantSettingResponse {
         assistant_id: parsed["assistant_id"].as_str().map(|s| s.to_owned()),
+        team_id: parsed["team_id"].as_str().map(|s| s.to_owned()),
         custom_agent_id: parsed["custom_agent_id"].as_str().map(|s| s.to_owned()),
         backend: parsed["backend"].as_str().map(|s| s.to_owned()),
         agent_type: parsed["agent_type"].as_str().map(|s| s.to_owned()),
@@ -516,8 +591,21 @@ fn parse_channel_assistant_setting(value: &str) -> Option<ChannelAssistantSettin
 fn normalize_channel_assistant_setting_for_write(
     assistant: &ChannelAssistantSettingRequest,
 ) -> ChannelAssistantSettingResponse {
+    let assistant_id = assistant
+        .assistant_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let team_id = assistant
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     ChannelAssistantSettingResponse {
-        assistant_id: Some(assistant.assistant_id.trim().to_owned()),
+        assistant_id,
+        team_id,
         custom_agent_id: None,
         backend: None,
         agent_type: None,
@@ -1107,7 +1195,8 @@ mod tests {
             TEST_USER_ID,
             PluginType::Telegram,
             &ChannelAssistantSettingRequest {
-                assistant_id: "assistant-1".into(),
+                assistant_id: Some("assistant-1".into()),
+                team_id: None,
                 name: Some("Claude".into()),
             },
         )
@@ -1136,7 +1225,8 @@ mod tests {
             TEST_USER_ID,
             PluginType::Lark,
             &ChannelAssistantSettingRequest {
-                assistant_id: "  legacy-custom  ".into(),
+                assistant_id: Some("  legacy-custom  ".into()),
+                team_id: None,
                 name: Some("Codex".into()),
             },
         )
@@ -1151,6 +1241,85 @@ mod tests {
         assert!(payload.get("custom_agent_id").is_none());
         assert!(payload.get("backend").is_none());
         assert!(payload.get("agent_type").is_none());
+    }
+
+    #[tokio::test]
+    async fn set_team_binding_persists_team_only_payload_and_resolves() {
+        let repo = Arc::new(MockPrefRepo::new());
+        let svc = ChannelSettingsService::new(repo.clone());
+
+        svc.set_assistant_setting(
+            TEST_USER_ID,
+            PluginType::Lark,
+            &ChannelAssistantSettingRequest {
+                assistant_id: None,
+                team_id: Some("  team-1  ".into()),
+                name: Some("Research".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored = repo.get_by_keys(TEST_USER_ID, &["assistant.lark.agent"]).await.unwrap();
+        let payload = serde_json::from_str::<serde_json::Value>(&stored[0].value).unwrap();
+        assert_eq!(payload["team_id"], "team-1");
+        assert!(payload.get("assistant_id").is_none());
+
+        let binding = svc.get_team_binding(TEST_USER_ID, PluginType::Lark).await.unwrap();
+        assert_eq!(
+            binding,
+            Some(ResolvedTeamBinding {
+                team_id: "team-1".into(),
+                name: Some("Research".into()),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_binding_rejects_missing_or_dual_targets() {
+        let repo = Arc::new(MockPrefRepo::new());
+        let svc = ChannelSettingsService::new(repo);
+
+        let missing = svc
+            .set_assistant_setting(
+                TEST_USER_ID,
+                PluginType::Lark,
+                &ChannelAssistantSettingRequest {
+                    assistant_id: None,
+                    team_id: None,
+                    name: None,
+                },
+            )
+            .await;
+        assert!(matches!(missing, Err(ChannelError::InvalidConfig(_))));
+
+        let dual = svc
+            .set_assistant_setting(
+                TEST_USER_ID,
+                PluginType::Lark,
+                &ChannelAssistantSettingRequest {
+                    assistant_id: Some("assistant-1".into()),
+                    team_id: Some("team-1".into()),
+                    name: None,
+                },
+            )
+            .await;
+        assert!(matches!(dual, Err(ChannelError::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn get_platform_settings_exposes_team_binding_without_assistant_promotion() {
+        let repo = Arc::new(MockPrefRepo::with_data(vec![(
+            "assistant.lark.agent",
+            r#"{"team_id":"team-1","name":"Research"}"#,
+        )]));
+        let svc = ChannelSettingsService::new(repo);
+
+        let settings = svc.get_platform_settings(TEST_USER_ID, PluginType::Lark).await.unwrap();
+        let assistant = settings.assistant.unwrap();
+        assert_eq!(assistant.team_id.as_deref(), Some("team-1"));
+        assert!(assistant.assistant_id.is_none());
+        assert_eq!(assistant.name.as_deref(), Some("Research"));
     }
 
     #[tokio::test]

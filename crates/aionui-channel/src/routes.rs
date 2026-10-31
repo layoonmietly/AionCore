@@ -77,6 +77,9 @@ impl From<ChannelError> for ApiError {
             ChannelError::DecryptionFailed(msg) => ApiError::Internal(msg),
             ChannelError::PlatformApi(msg) => ApiError::BadGateway(msg),
             ChannelError::MessageSendFailed(msg) => ApiError::Internal(msg),
+            ChannelError::ConversationBusy { conversation_id } => {
+                ApiError::Conflict(format!("conversation {conversation_id} is busy"))
+            }
             ChannelError::Database(db_err) => db_error_to_api_error(db_err),
             ChannelError::Json(e) => ApiError::Internal(format!("JSON error: {e}")),
         }

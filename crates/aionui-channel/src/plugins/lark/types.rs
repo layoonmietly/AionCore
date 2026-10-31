@@ -202,6 +202,81 @@ pub(crate) struct AudioContent {
     pub file_key: String,
 }
 
+/// Rich-text (`post`) message content.
+///
+/// Received events normally carry `{ title, content: [[element, ...], ...] }`.
+/// Posts with localized content may instead be keyed by locale (for example
+/// `{ "zh_cn": { title, content } }`); the plugin handles both shapes.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PostContent {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub content: Vec<Vec<PostElement>>,
+}
+
+/// One inline element inside a rich-text line.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "tag")]
+pub(crate) enum PostElement {
+    #[serde(rename = "text")]
+    Text {
+        #[serde(default)]
+        text: String,
+    },
+    #[serde(rename = "a")]
+    Link {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        href: String,
+    },
+    #[serde(rename = "at")]
+    At {
+        #[serde(default)]
+        user_id: String,
+        #[serde(default)]
+        user_name: String,
+    },
+    #[serde(rename = "img")]
+    Img {
+        #[serde(default)]
+        image_key: String,
+    },
+    #[serde(rename = "media")]
+    Media {
+        #[serde(default)]
+        file_key: String,
+        #[serde(default)]
+        image_key: String,
+        #[serde(default)]
+        file_name: String,
+        #[serde(default)]
+        mime_type: Option<String>,
+    },
+    #[serde(rename = "emotion")]
+    Emotion {
+        #[serde(default)]
+        emoji_type: String,
+    },
+    #[serde(rename = "code_block")]
+    CodeBlock {
+        #[serde(default)]
+        language: String,
+        #[serde(default)]
+        text: String,
+    },
+    #[serde(rename = "md")]
+    Markdown {
+        #[serde(default)]
+        text: String,
+    },
+    #[serde(rename = "hr")]
+    Hr,
+    #[serde(other)]
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // Card action (card.action.trigger)
 // ---------------------------------------------------------------------------
@@ -214,7 +289,22 @@ pub(crate) struct CardActionEvent {
     pub action: CardAction,
     #[serde(default)]
     pub token: Option<String>,
+    /// Feishu puts the originating card ids under `context` in v2 events.
+    #[serde(default)]
+    pub context: Option<CardActionContext>,
+    /// Legacy/top-level fallbacks.
+    #[serde(default)]
     pub open_message_id: Option<String>,
+    #[serde(default)]
+    pub open_chat_id: Option<String>,
+}
+
+/// Card ids carried by a `card.action.trigger` event.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CardActionContext {
+    #[serde(default)]
+    pub open_message_id: Option<String>,
+    #[serde(default)]
     pub open_chat_id: Option<String>,
 }
 
@@ -304,6 +394,40 @@ pub(crate) struct UpdateCardRequest {
 pub(crate) struct GenericResponse {
     pub code: i32,
     pub msg: String,
+}
+
+/// Response for `GET /im/v1/messages/{message_id}`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GetMessageResponse {
+    pub code: i32,
+    pub msg: String,
+    pub data: Option<GetMessageData>,
+}
+
+/// Data envelope for a fetched message.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct GetMessageData {
+    #[serde(default)]
+    pub items: Vec<QuotedMessageItem>,
+}
+
+/// A message fetched to resolve a Feishu quote/reply.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct QuotedMessageItem {
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub msg_type: String,
+    #[serde(default)]
+    pub body: Option<MessageBodyContent>,
+}
+
+/// Message body wrapper; `content` is a JSON string whose shape depends on
+/// `msg_type` (text, post, interactive, image, ...).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MessageBodyContent {
+    #[serde(default)]
+    pub content: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +721,23 @@ mod tests {
         assert_eq!(evt.operator.open_id, "ou_user1");
         assert_eq!(evt.action.tag, "button");
         assert_eq!(evt.open_message_id.as_deref(), Some("om_card1"));
+    }
+
+    #[test]
+    fn card_action_event_parses_context_ids() {
+        let raw = json!({
+            "operator": { "open_id": "ou_user1" },
+            "action": { "tag": "button", "value": { "action": "system:session.new" } },
+            "token": "tok_card",
+            "context": {
+                "open_message_id": "om_ctx",
+                "open_chat_id": "oc_ctx"
+            }
+        });
+        let evt: CardActionEvent = serde_json::from_value(raw).unwrap();
+        let context = evt.context.unwrap();
+        assert_eq!(context.open_message_id.as_deref(), Some("om_ctx"));
+        assert_eq!(context.open_chat_id.as_deref(), Some("oc_ctx"));
     }
 
     // -- BotMenuEvent -------------------------------------------------------

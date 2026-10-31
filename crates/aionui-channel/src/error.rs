@@ -46,6 +46,11 @@ pub enum ChannelError {
     #[error("Message send failed: {0}")]
     MessageSendFailed(String),
 
+    /// The conversation already owns an active turn. The orchestrator queues
+    /// the message and retries once that turn finishes.
+    #[error("Conversation is busy: {conversation_id}")]
+    ConversationBusy { conversation_id: String },
+
     #[error("{0}")]
     Database(#[from] aionui_db::DbError),
 

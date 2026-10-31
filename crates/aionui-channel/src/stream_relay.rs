@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use aionui_ai_agent::AgentStreamEvent;
 use async_trait::async_trait;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::error::ChannelError;
@@ -216,6 +216,32 @@ impl ChannelStreamRelay {
         let mut last_edit = Instant::now() - throttle;
         let mut has_content = false;
 
+        // Editing a Lark card can take hundreds of milliseconds. Doing it on
+        // the receive loop stalls event consumption and makes the broadcast
+        // buffer overflow (`Lagged`), which silently drops text chunks. Keep
+        // the receive loop non-blocking and let a single editor task always
+        // push the latest full text; intermediate updates coalesce.
+        let (display_tx, display_rx) = watch::channel(String::new());
+        let editor = {
+            let sender = Arc::clone(&self.sender);
+            let owner_user_id = self.config.owner_user_id.clone();
+            let plugin_id = self.config.plugin_id.clone();
+            let chat_id = self.config.chat_id.clone();
+            let platform = self.config.platform;
+            let msg_id = thinking_msg_id.clone();
+            tokio::spawn(async move {
+                let mut display_rx = display_rx;
+                while display_rx.changed().await.is_ok() {
+                    let text = display_rx.borrow_and_update().clone();
+                    let formatted = format_text_for_platform(&text, platform);
+                    let msg = ChannelMessageService::build_streaming_message(&formatted);
+                    let _ = sender
+                        .edit_message(&owner_user_id, &plugin_id, &chat_id, &msg_id, msg)
+                        .await;
+                }
+            })
+        };
+
         loop {
             match rx.recv().await {
                 Ok(event) => match ChannelMessageService::process_stream_event(&event) {
@@ -223,36 +249,19 @@ impl ChannelStreamRelay {
                         text_buffer.push_str(&chunk);
                         has_content = true;
                         if last_edit.elapsed() >= throttle {
-                            let formatted = format_text_for_platform(&text_buffer, self.config.platform);
-                            let msg = ChannelMessageService::build_streaming_message(&formatted);
-                            let _ = self
-                                .sender
-                                .edit_message(
-                                    &self.config.owner_user_id,
-                                    &self.config.plugin_id,
-                                    &self.config.chat_id,
-                                    &thinking_msg_id,
-                                    msg,
-                                )
-                                .await;
+                            let _ = display_tx.send(text_buffer.clone());
                             last_edit = Instant::now();
                         }
                     }
                     Some(StreamAction::Thinking(_)) => {}
-                    Some(StreamAction::ToolCall { name, .. }) => {
-                        let msg = ChannelMessageService::build_streaming_message(&format!("\u{23f3} {name}..."));
-                        let _ = self
-                            .sender
-                            .edit_message(
-                                &self.config.owner_user_id,
-                                &self.config.plugin_id,
-                                &self.config.chat_id,
-                                &thinking_msg_id,
-                                msg,
-                            )
-                            .await;
+                    Some(StreamAction::ToolCall { name, .. }) if last_edit.elapsed() >= throttle => {
+                        let _ = display_tx.send(format!("\u{23f3} {name}..."));
+                        last_edit = Instant::now();
                     }
+                    Some(StreamAction::ToolCall { .. }) => {}
                     Some(StreamAction::Finish) => {
+                        drop(display_tx);
+                        let _ = editor.await;
                         self.send_final_edit(&text_buffer, has_content, &thinking_msg_id).await;
                         info!(
                             plugin_id = %self.config.plugin_id,
@@ -263,6 +272,8 @@ impl ChannelStreamRelay {
                         break;
                     }
                     Some(StreamAction::Error(msg)) => {
+                        drop(display_tx);
+                        let _ = editor.await;
                         let error_msg = UnifiedOutgoingMessage {
                             message_type: OutgoingMessageType::Text,
                             text: Some(format!("\u{274c} {msg}")),
@@ -292,6 +303,8 @@ impl ChannelStreamRelay {
                 },
                 Err(broadcast::error::RecvError::Closed) => {
                     warn!("channel stream relay: broadcast closed without terminal event");
+                    drop(display_tx);
+                    let _ = editor.await;
                     self.send_final_edit(&text_buffer, has_content, &thinking_msg_id).await;
                     break;
                 }
@@ -309,20 +322,22 @@ impl ChannelStreamRelay {
     }
 
     async fn send_final_edit(&self, text_buffer: &str, has_content: bool, msg_id: &str) {
-        if has_content {
-            let formatted = format_text_for_platform(text_buffer, self.config.platform);
-            let final_msg = ChannelMessageService::build_final_message(&formatted);
-            let _ = self
-                .sender
-                .edit_message(
-                    &self.config.owner_user_id,
-                    &self.config.plugin_id,
-                    &self.config.chat_id,
-                    msg_id,
-                    final_msg,
-                )
-                .await;
-        }
+        // Always settle the placeholder: a turn that produced no assistant text
+        // (slash commands such as /clear, tool-only runs) would otherwise leave
+        // a card stuck on "Thinking..." forever.
+        let body = if has_content { text_buffer } else { "\u{2705} Done." };
+        let formatted = format_text_for_platform(body, self.config.platform);
+        let final_msg = ChannelMessageService::build_final_message(&formatted);
+        let _ = self
+            .sender
+            .edit_message(
+                &self.config.owner_user_id,
+                &self.config.plugin_id,
+                &self.config.chat_id,
+                msg_id,
+                final_msg,
+            )
+            .await;
     }
 }
 

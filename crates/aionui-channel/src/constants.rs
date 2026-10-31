@@ -57,8 +57,10 @@ pub const TELEGRAM_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 // Lark
 // ---------------------------------------------------------------------------
 
-/// TTL for Lark event deduplication cache.
-pub const LARK_EVENT_DEDUP_TTL: Duration = Duration::from_secs(5 * 60);
+/// TTL for Lark event deduplication cache. Lark retries unacknowledged events
+/// across reconnects (including after a process restart), so entries must live
+/// long enough to cover a restart plus the retry window.
+pub const LARK_EVENT_DEDUP_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 // ---------------------------------------------------------------------------
 // Slack
@@ -179,8 +181,8 @@ mod tests {
     }
 
     #[test]
-    fn lark_event_dedup_ttl_is_five_minutes() {
-        assert_eq!(LARK_EVENT_DEDUP_TTL, Duration::from_secs(300));
+    fn lark_event_dedup_ttl_covers_restarts() {
+        assert_eq!(LARK_EVENT_DEDUP_TTL, Duration::from_secs(24 * 60 * 60));
     }
 
     #[test]
