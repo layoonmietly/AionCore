@@ -117,7 +117,7 @@ dependencies = [
 [[package]]
 name = "aion-agent"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-compact",
  "aion-config",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "aion-compact"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "regex",
  "serde",
@@ -160,7 +160,7 @@ dependencies = [
 [[package]]
 name = "aion-config"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-compact",
  "aion-process",
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "aion-mcp"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-config",
  "aion-protocol",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "aion-memory"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-config",
  "chrono",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "aion-process"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "libc",
  "tokio",
@@ -231,7 +231,7 @@ dependencies = [
 [[package]]
 name = "aion-protocol"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-types",
  "serde",
@@ -244,7 +244,7 @@ dependencies = [
 [[package]]
 name = "aion-providers"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-config",
  "aion-types",
@@ -273,7 +273,7 @@ dependencies = [
 [[package]]
 name = "aion-skills"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-config",
  "aion-mcp",
@@ -300,7 +300,7 @@ dependencies = [
 [[package]]
 name = "aion-tools"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "aion-config",
  "aion-process",
@@ -322,7 +322,7 @@ dependencies = [
 [[package]]
 name = "aion-types"
 version = "0.2.11"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "async-trait",
  "base64",
@@ -540,6 +540,7 @@ dependencies = [
  "axum",
  "base64",
  "dashmap",
+ "dirs",
  "futures-util",
  "getrandom 0.2.17",
  "prost",
@@ -7117,7 +7118,7 @@ dependencies = [
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/iOfficeAI/aionrs.git?tag=v0.2.11#8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+source = "git+https://github.com/layoonmietly/aionrs?branch=local%2Fpatches#c7bff04659077dfe2819d6fd92ffbc0fb2ee4f4f"
 dependencies = [
  "bitflags",
  "cc",
